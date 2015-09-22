@@ -8,6 +8,18 @@
 
 %{!?_udevrulesdir: %global _udevrulesdir /lib/udev/rules.d}
 
+# Use systemd files on RHEL 7 and above and in SUSE/openSUSE.
+# Note: We don't install unit files for the services yet. For now,
+# the _with_systemd variable only implies that we'll install
+# /etc/tmpfiles.d/ceph.conf in order to set up the socket directory in
+# /var/run/ceph.
+%if 0%{?fedora} || 0%{?rhel} >= 7 || 0%{?suse_version} > 1300
+%global _with_systemd 1
+%endif
+
+#################################################################################
+# common
+#################################################################################
 Name:		ceph
 Version:	@VERSION@
 Release:	@RPM_RELEASE@%{?dist}
@@ -17,7 +29,7 @@ License:	GPL-2.0
 Group:		System Environment/Base
 URL:		http://ceph.com/
 Source0:	http://ceph.com/download/%{name}-%{version}.tar.bz2
-%if 0%{?fedora} || 0%{?centos} || 0%{?rhel}
+%if 0%{?fedora} || 0%{?rhel}
 Patch0:		init-ceph.in-fedora.patch
 %endif
 #################################################################################
@@ -34,13 +46,15 @@ Requires:	python
 Requires:	python-requests
 Requires:	grep
 Requires:	xfsprogs
+Requires:	logrotate
 Requires:	parted
 Requires:	util-linux
 Requires:	hdparm
 Requires:	cryptsetup
 Requires(post):	binutils
-%if 0%{with cephfs_java}
-BuildRequires: sharutils
+# We require this to be present for %%{_tmpfilesdir}
+%if 0%{?_with_systemd}
+Requires: systemd
 %endif
 BuildRequires:	gcc-c++
 BuildRequires:	boost-devel
@@ -93,7 +107,6 @@ BuildRequires:	gperftools-devel
 Requires:	scsirastools
 BuildRequires:	google-perftools-devel
 %endif
-Recommends:	logrotate
 BuildRequires:	%insserv_prereq
 BuildRequires:	mozilla-nss-devel
 BuildRequires:	keyutils-devel
@@ -193,7 +206,7 @@ managers such as Pacemaker.
 Summary:	RADOS distributed object store client library
 Group:		System Environment/Libraries
 License:	LGPL-2.0
-%if 0%{?rhel} || 0%{?centos} || 0%{?fedora}
+%if 0%{?rhel} || 0%{?fedora}
 Obsoletes:	ceph-libs < %{epoch}:%{version}-%{release}
 %endif
 %description -n librados2
@@ -248,7 +261,7 @@ Summary:	RADOS block device client library
 Group:		System Environment/Libraries
 License:	LGPL-2.0
 Requires:	librados2 = %{epoch}:%{version}-%{release}
-%if 0%{?rhel} || 0%{?centos} || 0%{?fedora}
+%if 0%{?rhel} || 0%{?fedora}
 Obsoletes:	ceph-libs < %{epoch}:%{version}-%{release}
 %endif
 %description -n librbd1
@@ -283,7 +296,7 @@ block device.
 Summary:	Ceph distributed file system client library
 Group:		System Environment/Libraries
 License:	LGPL-2.0
-%if 0%{?rhel} || 0%{?centos} || 0%{?fedora}
+%if 0%{?rhel} || 0%{?fedora}
 Obsoletes:	ceph-libs < %{epoch}:%{version}-%{release}
 Obsoletes:	ceph-libcephfs
 %endif
@@ -440,7 +453,7 @@ python-cephfs instead.
 #################################################################################
 %prep
 %setup -q
-%if 0%{?fedora} || 0%{?rhel} || 0%{?centos}
+%if 0%{?fedora} || 0%{?rhel}
 %patch0 -p1 -b .init
 %endif
 
@@ -495,6 +508,9 @@ install -D src/init-ceph $RPM_BUILD_ROOT%{_initrddir}/ceph
 install -D src/init-radosgw.sysv $RPM_BUILD_ROOT%{_initrddir}/ceph-radosgw
 install -D src/init-rbdmap $RPM_BUILD_ROOT%{_initrddir}/rbdmap
 install -D src/rbdmap $RPM_BUILD_ROOT%{_sysconfdir}/ceph/rbdmap
+%if 0%{?_with_systemd}
+  install -m 0644 -D systemd/ceph.tmpfiles.d $RPM_BUILD_ROOT%{_tmpfilesdir}/%{name}.conf
+%endif
 mkdir -p $RPM_BUILD_ROOT%{_sbindir}
 ln -sf ../../etc/init.d/ceph %{buildroot}/%{_sbindir}/rcceph
 ln -sf ../../etc/init.d/ceph-radosgw %{buildroot}/%{_sbindir}/rcceph-radosgw
@@ -527,14 +543,18 @@ mv $RPM_BUILD_ROOT/sbin/mount.fuse.ceph $RPM_BUILD_ROOT/usr/sbin/mount.fuse.ceph
 
 #set up placeholder directories
 mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/ceph
+%if  (! 0%{?suse_version}) || ( 0%{?suse_version} && (! 0%{?_with_systemd}) )
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/run/ceph
+%endif
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/log/ceph
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/ceph/tmp
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/ceph/mon
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/ceph/osd
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/ceph/mds
+mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/ceph/radosgw
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/ceph/bootstrap-osd
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/ceph/bootstrap-mds
+mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/ceph/bootstrap-rgw
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/log/radosgw
 
 %clean
@@ -543,7 +563,6 @@ rm -rf $RPM_BUILD_ROOT
 %post
 /sbin/ldconfig
 /sbin/chkconfig --add ceph
-mkdir -p %{_localstatedir}/run/ceph/
 
 %preun
 %if %{defined suse_version}
@@ -589,6 +608,9 @@ fi
 %{_bindir}/ceph-debugpack
 %{_bindir}/ceph-coverage
 %{_initrddir}/ceph
+%if 0%{?_with_systemd}
+%{_tmpfilesdir}/%{name}.conf
+%endif
 %{_sbindir}/ceph-disk
 %{_sbindir}/ceph-disk-activate
 %{_sbindir}/ceph-disk-prepare
@@ -649,7 +671,10 @@ fi
 %dir %{_localstatedir}/lib/ceph/mds
 %dir %{_localstatedir}/lib/ceph/bootstrap-osd
 %dir %{_localstatedir}/lib/ceph/bootstrap-mds
-%ghost %dir %{_localstatedir}/run/ceph/
+%dir %{_localstatedir}/lib/ceph/bootstrap-rgw
+%if  (! 0%{?suse_version}) || ( 0%{?suse_version} && (! 0%{?_with_systemd}) )
+%dir %{_localstatedir}/run/ceph/
+%endif
 
 #################################################################################
 %files -n ceph-common
@@ -724,6 +749,7 @@ fi
 %config(noreplace) %{_sysconfdir}/logrotate.d/radosgw
 %config %{_sysconfdir}/bash_completion.d/radosgw-admin
 %dir %{_localstatedir}/log/radosgw/
+%dir %{_localstatedir}/lib/ceph/radosgw
 
 %post radosgw
 /sbin/ldconfig
